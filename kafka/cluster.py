@@ -48,6 +48,7 @@ class ClusterMetadata(object):
         self._partitions = {}  # topic -> partition -> PartitionMetadata
         self._broker_partitions = collections.defaultdict(set)  # node_id -> {TopicPartition...}
         self._groups = {}  # group_name -> node_id
+        self._broker_to_node_orig = {}  # host:port -> node_id
         self._last_refresh_ms = 0
         self._last_successful_refresh_ms = 0
         self._need_update = True
@@ -226,6 +227,9 @@ class ClusterMetadata(object):
             f.failure(exception)
         self._last_refresh_ms = time.time() * 1000
 
+    def _get_broker_node_key(self, host, port):
+        return '%s:%s' % (host, port)
+
     def update_metadata(self, metadata):
         """Update cluster state given a MetadataResponse.
 
@@ -304,7 +308,12 @@ class ClusterMetadata(object):
                           topic, error_type)
 
         with self._lock:
-            self._brokers = _new_brokers
+            for i, broker in _new_brokers.items():
+                if i not in self._brokers:
+                    self._brokers[i] = broker
+                    _k = self._get_broker_node_key(broker.host, broker.port)
+                    self._broker_to_node_orig[_k] = i
+
             self.controller = _new_controller
             self._partitions = _new_partitions
             self._broker_partitions = _new_broker_partitions
@@ -362,10 +371,12 @@ class ClusterMetadata(object):
         # Use a coordinator-specific node id so that group requests
         # get a dedicated connection
         node_id = 'coordinator-{}'.format(response.coordinator_id)
+        _k = self._get_broker_node_key(response.host, response.port)
+        
         coordinator = BrokerMetadata(
             node_id,
-            response.host,
-            response.port,
+            self._brokers[self._broker_to_node_orig[_k]].host,
+            self._brokers[self._broker_to_node_orig[_k]].port,
             None)
 
         log.info("Group coordinator for %s is %s", group, coordinator)
